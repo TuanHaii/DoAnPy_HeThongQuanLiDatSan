@@ -1,0 +1,115 @@
+version: '3.8'
+
+services:
+  # MySQL Database
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_DATABASE: sports_booking
+      MYSQL_USER: sports_user
+      MYSQL_PASSWORD: sports_password
+      MYSQL_ROOT_PASSWORD: root_password
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+
+  # Redis for Channels and Celery
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  # Django Backend
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=True
+      - SECRET_KEY=your-secret-key-here
+      - DB_NAME=sports_booking
+      - DB_USER=sports_user
+      - DB_PASSWORD=sports_password
+      - DB_HOST=db
+      - DB_PORT=3306
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - ./backend:/app
+      - media_files:/app/media
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    command: >
+      sh -c "python manage.py migrate &&
+             python manage.py collectstatic --noinput &&
+             daphne -b 0.0.0.0 -p 8000 backend.asgi:application"
+
+  # Celery Worker (for background tasks)
+  celery:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    environment:
+      - DEBUG=True
+      - SECRET_KEY=your-secret-key-here
+      - DB_NAME=sports_booking
+      - DB_USER=sports_user
+      - DB_PASSWORD=sports_password
+      - DB_HOST=db
+      - DB_PORT=3306
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - ./backend:/app
+      - media_files:/app/media
+    depends_on:
+      - db
+      - redis
+    command: celery -A backend worker -l info
+
+  # React Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_BASE_URL=http://localhost:8000/api
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+
+  # Nginx (Production)
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+      - media_files:/app/media
+      - static_files:/app/static
+    depends_on:
+      - backend
+      - frontend
+
+volumes:
+  mysql_data:
+  redis_data:
+  media_files:
+  static_files:
